@@ -1,0 +1,6 @@
+<launch>
+
+  <!-- Start testing motor_control node -->
+  <node name="testing_motor_control_node" pkg="testing_motor_control" type="testing_motor_control_node.py" output="screen" />
+
+</launch>

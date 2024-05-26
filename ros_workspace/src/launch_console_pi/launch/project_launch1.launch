@@ -1,0 +1,6 @@
+<launch>
+  
+  <!-- Start sensors_i2c_reading node -->
+  <node name="sensors_i2c_reading_node" pkg="sensors_i2c_reading" type="sensors_i2c_reading_node.py" output="screen" />
+
+</launch>

@@ -50,3 +50,7 @@ logs/
 
 # Environment files
 .env
+
+# others
+.xml
+
