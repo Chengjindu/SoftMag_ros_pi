@@ -1,0 +1,52 @@
+# Compiled python files
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Packages
+*.egg
+*.egg-info
+dist/
+build/
+eggs/
+parts/
+bin/
+var/
+sdist/
+develop-eggs/
+.wheelhouse/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+*.iml
+
+# ROS
+devel/
+build/
+logs/
+.catkin_tools
+.qtc_clangd/
+
+# Environment files
+.env
