@@ -3,7 +3,7 @@ import RPi.GPIO as GPIO
 import time
 import sys
 import rospy
-from std_msgs.msg import String, Int32
+from std_msgs.msg import String, Int32, Bool
 import json
 import signal
 
@@ -20,7 +20,9 @@ steps_per_rev = 200
 full_stroke_angle = 85
 max_steps = int((full_stroke_angle / 360) * steps_per_rev)
 step_sleep = 0.01
-start_flag = True
+start_sleep = 2
+start_flag = False
+release_flag = True
 motor_running = False
 
 global motor_stop_publisher
@@ -29,6 +31,8 @@ motor_stop_publisher = None
 global motor_pos_reading_publisher
 motor_pos_reading_publisher = 0
 
+global motor_zero_publisher
+motor_zero_publisher = None
 
 def setup_gpio():
     global gpio_setup_done
@@ -45,7 +49,7 @@ def setup_gpio():
         gpio_setup_done = True
 
 def step_motor(steps, step_sleep, direction):
-    global position_counter, start_flag, motor_running
+    global position_counter, start_flag, motor_running, motor_stop_publisher, motor_zero_publisher
     
     start_flag = False	  # Prevent starting the motor again
     motor_running = True  # Indicate motor is starting
@@ -59,6 +63,8 @@ def step_motor(steps, step_sleep, direction):
         if (direction == 'forward' and position_counter >= max_steps) or \
            (direction == 'backward' and position_counter <= 0):
             rospy.loginfo("Safety limit reached. Stopping motor.")
+            motor_running = False  # Indicate motor has stopped
+            motor_stop_publisher.publish(Bool(data=True))
             return
         
         if direction == 'forward':
@@ -67,7 +73,12 @@ def step_motor(steps, step_sleep, direction):
         else:  # Reverse direction
             sequence = (4 - (i % 4)) % 4
             position_counter -= 1  # Decrement position counter
-            
+        
+        if position_counter == 0:
+            motor_zero_publisher.publish(Bool(data=True))
+        else:
+            motor_zero_publisher.publish(Bool(data=False))
+        
         if sequence == 0:
             GPIO.output(out4, GPIO.HIGH)
             GPIO.output(out3, GPIO.LOW)
@@ -93,12 +104,40 @@ def step_motor(steps, step_sleep, direction):
 
         motor_pos_reading_publisher.publish(position_counter)
         
-        
     motor_running = False  # Indicate motor has stopped
+    motor_stop_publisher.publish(Bool(data=True))
+
+def sensors_stabilized_callback(data):
+    global step_sleep, start_flag
+    
+    sensors_stabilized = data.data
+    
+    if sensors_stabilized and start_flag:
+        rpm = 2  # Modify as needed
+        step_sleep = 60 / (rpm * steps_per_rev)
+        rospy.loginfo(f"Sensor initialized, start closing with {rpm} rpm speed...")
+        time.sleep(start_sleep)
+        step_motor(max_steps, step_sleep, 'forward')
+
+def contact_trigger_callback(data):
+    if data.data:
+        rospy.loginfo("Contact detected. Stopping motor.")
+        stop_motor_after_contact()  # Stops the motor
+
+def stop_motor_after_contact():
+    global motor_running
+    motor_running = False  # Request motor stop
+    rospy.loginfo(f"Motor stopped at position {position_counter}")
+
+def release_finish_callback(data):
+    global release_flag
+    if data.data and release_flag:
+        rospy.loginfo('Release finished, returning to zero...')
+        return_to_zero()
+        release_flag = False
 
 def return_to_zero():
-    global position_counter, step_sleep, gpio_setup_done, motor_running
-    motor_running = False
+    global position_counter, step_sleep, gpio_setup_done, motor_running, motor_zero_publisher
     
     try:
         if position_counter != 0:
@@ -111,95 +150,59 @@ def return_to_zero():
         if gpio_setup_done:
             rospy.loginfo("Cleaning up GPIO...")
             GPIO.cleanup()
+            motor_zero_publisher.publish(Bool(data=True))
             gpio_setup_done = False  # Reset flag after cleanup
 
-def stop_motor_after_contact():
-    global motor_running, motor_stop_publisher
-    motor_running = False  # Request motor stop
-    rospy.loginfo(f"Motor stopped at position {position_counter}")
-    motor_stop_publisher.publish(json.dumps({'motor_stop': True}))
-
-def processed_sensor_data_callback(data):
-    global step_sleep, start_flag
-    
-    data_json = json.loads(data.data)
-    
-    if data_json.get('stable_flag') and start_flag:
-        # Assuming the RPM is predefined for this demonstration
-        rpm = 2  # Modify as needed
-        step_sleep = 60 / (rpm * steps_per_rev)
-        # Move forward to close the fingers
-        rospy.loginfo(f"Sensor initialized, start closing with {rpm} rpm speed...")
-        step_motor(max_steps, step_sleep, 'forward')
-
-def contact_trigger_callback(data):
-    data_json = json.loads(data.data)
-    
-    if data_json.get('change_flag'):
-        rospy.loginfo("Contact detected. Stopping motor.")
-        stop_motor_after_contact()  # Stops the motor
-
-def grasp_stable_callback(data):
-    data_json = json.loads(data.data)
-    
-    if data_json.get('grasp_stable_flag'):
-        motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
-
-def release_finish_callback(data):
-    data_json = json.loads(data.data)
-    
-    if data_json.get('release_finish_flag'):
-        rospy.loginfo('Release finished, returning to zero...')
-        return_to_zero()
-    motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
-
-
-def signal_handler(sig, frame):
-    rospy.loginfo('SIGINT caught, initiating cleanup...')
-    return_to_zero()  # Assuming this function performs the motor reset and GPIO cleanup
-    sys.exit(0)
-
-def motor_control_node():
-    global motor_pos_reading_publisher, motor_stop_publisher  
-    
-    rospy.init_node('automatic_motor_control_node', anonymous=True)
-    setup_gpio()
-    
-    # Define a publisher for the "motor_stop" topic
-    motor_stop_publisher = rospy.Publisher('motor_stop', String, queue_size=10, latch=True)
-    
-    # Define a publisher for the "motor_pos_reading" topic
-    motor_pos_reading_publisher = rospy.Publisher('motor_pos_reading', Int32, queue_size=10, latch=True)
-    
-    # Register signal handler
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    rospy.Subscriber('processed_sensor_data', String, processed_sensor_data_callback)
-    rospy.Subscriber('contact_trigger', String, contact_trigger_callback)
-    rospy.Subscriber('grasp_stable', String, grasp_stable_callback)
-    rospy.Subscriber('release_finish', String, release_finish_callback)
-    rospy.Subscriber('restart', String, restart_callback)
-    rospy.Subscriber('stop_all', String, stop_all_callback)
-
-    rospy.spin()
-    
-def restart_callback(msg):
-    global start_flag
+def restart_callback(data):
+    global start_flag, release_flag
     start_flag = True
+    release_flag = True
     setup_gpio()
     rospy.loginfo("Restartting...")
 
 def stop_all_callback(data):
-    global motor_running, motor_stop_publisher
+    global motor_running
     
-    data_json = json.loads(data.data)
-    if data_json.get('stop_all_flag'):
+    if data.data:
         motor_running = False  # Request motor stop
         rospy.loginfo(f"Motor stopped at position {position_counter}")
+
+def zero_motor_callback(data):
+    global motor_running
     
-    motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
+    if data.data:
+        motor_running = False  # Request motor stop
+        return_to_zero()
+    setup_gpio()
 
+def signal_handler(sig, frame):
+    rospy.loginfo('SIGINT caught, initiating cleanup...')
+    return_to_zero()  
+    sys.exit(0)
 
+def motor_control_node():
+    global motor_pos_reading_publisher, motor_stop_publisher, motor_zero_publisher
+    
+    rospy.init_node('automatic_motor_control_node', anonymous=True)
+    setup_gpio()
+    
+    motor_pos_reading_publisher = rospy.Publisher('motor_pos_reading', Int32, queue_size=10, latch=True)
+    motor_stop_publisher = rospy.Publisher('motor_stop', Bool, queue_size=10, latch=True)
+    motor_zero_publisher = rospy.Publisher('motor_zero', Bool, queue_size=10, latch=True)
+    
+    signal.signal(signal.SIGINT, signal_handler)    # Register signal handler
+    
+    rospy.Subscriber('contact_trigger', Bool, contact_trigger_callback)
+    rospy.Subscriber('release_finish', Bool, release_finish_callback)
+    rospy.Subscriber('restart', Bool, restart_callback)
+    rospy.Subscriber('stop_all', Bool, stop_all_callback)
+    rospy.Subscriber('zero_motor', Bool, zero_motor_callback)
+    rospy.Subscriber('sensors_stabilized', Bool, sensors_stabilized_callback)
+    
+    motor_zero_publisher.publish(Bool(data=True))
+    motor_stop_publisher.publish(Bool(data=True))
+    
+    rospy.spin()
 
 if __name__ == "__main__":
     motor_control_node()

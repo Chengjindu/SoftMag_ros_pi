@@ -1,6 +1,0 @@
-<launch>
-
-  <!-- Start automatic motor_control node -->
-  <node name="automatic_motor_control_node" pkg="automatic_motor_control" type="automatic_motor_control_node.py" output="screen" />
-
-</launch>

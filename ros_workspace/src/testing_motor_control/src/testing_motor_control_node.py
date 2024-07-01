@@ -3,9 +3,11 @@ import RPi.GPIO as GPIO
 import time
 import sys
 import rospy
-from std_msgs.msg import String, Int32
+from std_msgs.msg import String, Int32, Bool
 import json
 import signal
+
+GPIO.setwarnings(False)
 
 # Motor GPIO Pins
 out1 = 17
@@ -18,7 +20,7 @@ steps_per_rev = 200
 full_stroke_angle = 85
 max_steps = int((full_stroke_angle / 360) * steps_per_rev)
 step_sleep = 0.01
-start_flag = True
+initialize_flag = True
 motor_running = False
 
 global motor_pos_reading_publisher
@@ -26,6 +28,9 @@ motor_pos_reading_publisher = 0
 
 global motor_stop_publisher
 motor_stop_publisher = None
+
+global motor_zero_publisher
+motor_zero_publisher = None
 
 def setup_gpio():
     global gpio_setup_done
@@ -42,12 +47,12 @@ def setup_gpio():
         gpio_setup_done = True
 
 def step_motor(steps, step_sleep, direction):
-    global position_counter, start_flag, motor_running, motor_stop_publisher
+    global position_counter, initialize_flag, motor_running, motor_stop_publisher, motor_zero_publisher
     
-    start_flag = False  # Prevent starting the motor again
+    initialize_flag = False  # Prevent initializing the motor again
     motor_running = True  # Indicate motor is starting
     
-    motor_stop_publisher.publish(json.dumps({'motor_stop': False}))  # Indicate motor is running
+    motor_stop_publisher.publish(Bool(data=False))  # Indicate motor is running
     
     for i in range(steps):
         
@@ -59,7 +64,7 @@ def step_motor(steps, step_sleep, direction):
            (direction == 'backward' and position_counter <= 0):
             rospy.loginfo("Safety limit reached. Stopping motor.")
             motor_running = False  # Indicate motor has stopped
-            motor_stop_publisher.publish(json.dumps({'motor_stop': True}))  # Indicate motor has stopped
+            motor_stop_publisher.publish(Bool(data=True))  # Indicate motor has stopped
             return
         
         if direction == 'forward':
@@ -68,6 +73,11 @@ def step_motor(steps, step_sleep, direction):
         else:  # Reverse direction
             sequence = (4 - (i % 4)) % 4
             position_counter -= 1  # Decrement position counter
+            
+        if position_counter == 0:
+            motor_zero_publisher.publish(Bool(data=True))
+        else:
+            motor_zero_publisher.publish(Bool(data=False))
             
         if sequence == 0:
             GPIO.output(out4, GPIO.HIGH)
@@ -89,17 +99,17 @@ def step_motor(steps, step_sleep, direction):
             GPIO.output(out3, GPIO.LOW)
             GPIO.output(out2, GPIO.LOW)
             GPIO.output(out1, GPIO.HIGH)
-
+        
         time.sleep(step_sleep)
 
         motor_pos_reading_publisher.publish(position_counter)
         
     motor_running = False  # Indicate motor has stopped
-    motor_stop_publisher.publish(json.dumps({'motor_stop': True}))  # Indicate motor has stopped
+    motor_stop_publisher.publish(Bool(data=True))
 
 def return_to_zero():
     rospy.loginfo("Cleaning up GPIO and stopping motor...")
-    global position_counter, step_sleep, gpio_setup_done, motor_running
+    global position_counter, step_sleep, gpio_setup_done, motor_running, motor_zero_publisher
     motor_running = False
     try:
         if position_counter != 0:
@@ -113,27 +123,28 @@ def return_to_zero():
     finally:
         if gpio_setup_done:
             GPIO.cleanup()
+            motor_zero_publisher.publish(Bool(data=True))  # Initialize motor zero status
             gpio_setup_done = False  # Reset flag after cleanup
 
-def processed_sensor_data_callback(data):
-    global step_sleep, start_flag
+def sensors_stabilized_callback(data):
+    global step_sleep, initialize_flag
     
-    data_json = json.loads(data.data)
+    sensors_stabilized = data.data
     
-    if data_json.get('stable_flag') and start_flag:
+    if sensors_stabilized and initialize_flag:
         # Assuming the RPM is predefined for this demonstration
         rpm = 2  # Modify as needed
         step_sleep = 60 / (rpm * steps_per_rev)
         # Move forward to close the fingers
         rospy.loginfo(f"Sensor initialized, start closing with {rpm} rpm speed...")
-        start_flag = False
+        initialize_flag = False
 
 def motor_pos_ctrl_callback(data):
-    global step_sleep, start_flag
+    global step_sleep, initialize_flag
     position = data.data
     current_position = position_counter
 
-    if not start_flag:
+    if not initialize_flag:
         if position == current_position:
             rospy.loginfo("Motor is already at the desired position.")
             motor_stop_publisher.publish(json.dumps({'motor_stop': True}))
@@ -145,42 +156,51 @@ def motor_pos_ctrl_callback(data):
         else:
             steps = current_position - position
             direction = 'backward'
-
+        
         step_motor(steps, step_sleep, direction)
     else:
         rospy.loginfo("Waiting for sensors to stablize before moving motor.")
 
 def stop_all_callback(data):
-    global motor_running, motor_stop_publisher
+    global motor_running
     
-    data_json = json.loads(data.data)
-    if data_json.get('stop_all_flag'):
+    if data.data:
         motor_running = False  # Request motor stop
         rospy.loginfo(f"Motor stopped at position {position_counter}")
 
+def zero_motor_callback(data):
+    global motor_running
+    
+    if data.data:
+        motor_running = False  # Request motor stop
+        return_to_zero()
+    setup_gpio()
+
 def signal_handler(sig, frame):
     rospy.loginfo('SIGINT caught, initiating cleanup...')
-    return_to_zero()  # Assuming this function performs the motor reset and GPIO cleanup
+    return_to_zero()
     sys.exit(0)
 
 def motor_control_node():
-    global motor_pos_reading_publisher, motor_stop_publisher
+    global motor_pos_reading_publisher, motor_stop_publisher, motor_zero_publisher
     
     rospy.init_node('testing_motor_control_node', anonymous=True)
     setup_gpio()
     
-    # Define a publisher for the "motor_pos_reading" topic
     motor_pos_reading_publisher = rospy.Publisher('motor_pos_reading', Int32, queue_size=10, latch=True)
-    
-    # Define a publisher for the "motor_stop" topic
-    motor_stop_publisher = rospy.Publisher('motor_stop', String, queue_size=10, latch=True)
+    motor_stop_publisher = rospy.Publisher('motor_stop', Bool, queue_size=10, latch=True)
+    motor_zero_publisher = rospy.Publisher('motor_zero', Bool, queue_size=10, latch=True)
     
     # Register signal handler
     signal.signal(signal.SIGINT, signal_handler)
     
     rospy.Subscriber('motor_pos_ctrl', Int32, motor_pos_ctrl_callback)
-    rospy.Subscriber('processed_sensor_data', String, processed_sensor_data_callback)
-    rospy.Subscriber('stop_all', String, stop_all_callback)
+    rospy.Subscriber('sensors_stabilized', Bool, sensors_stabilized_callback)
+    rospy.Subscriber('zero_motor', Bool, zero_motor_callback)
+    rospy.Subscriber('stop_all', Bool, stop_all_callback)
+    
+    motor_zero_publisher.publish(Bool(data=True))  # Initialize motor zero status
+    motor_stop_publisher.publish(Bool(data=True))  # Initialize motor stop status
 
     rospy.spin()
     

@@ -18,7 +18,9 @@ steps_per_rev = 200
 full_stroke_angle = 85
 max_steps = int((full_stroke_angle / 360) * steps_per_rev)
 step_sleep = 0.01
-start_flag = True
+stable_flag_S1 = False
+stable_flag_S2 = False
+initialize_flag = True
 motor_running = False
 
 global motor_pos_reading_publisher
@@ -42,9 +44,9 @@ def setup_gpio():
         gpio_setup_done = True
 
 def step_motor(steps, step_sleep, direction):
-    global position_counter, start_flag, motor_running, motor_stop_publisher
+    global position_counter, initialize_flag, motor_running, motor_stop_publisher
     
-    start_flag = False  # Prevent starting the motor again
+    initialize_flag = False  # Prevent initializing the motor again
     motor_running = True  # Indicate motor is starting
     
     motor_stop_publisher.publish(json.dumps({'motor_stop': False}))  # Indicate motor is running
@@ -115,25 +117,42 @@ def return_to_zero():
             GPIO.cleanup()
             gpio_setup_done = False  # Reset flag after cleanup
 
-def processed_sensor_data_callback(data):
-    global step_sleep, start_flag
+def processed_sensor_data_callback_S1(data):
+    global stable_flag_S1, stable_flag_S2
     
     data_json = json.loads(data.data)
     
-    if data_json.get('stable_flag') and start_flag:
+    stable_flag_S1 = data_json.get('stable_flag')
+    rospy.loginfo(f"stable_flag_S1 set to be {stable_flag_S1}")
+    if stable_flag_S1 and stable_flag_S2 and initialize_flag:
         # Assuming the RPM is predefined for this demonstration
         rpm = 2  # Modify as needed
         step_sleep = 60 / (rpm * steps_per_rev)
         # Move forward to close the fingers
         rospy.loginfo(f"Sensor initialized, start closing with {rpm} rpm speed...")
-        start_flag = False
+        initialize_flag = False
+
+def processed_sensor_data_callback_S2(data):
+    global stable_flag_S1, stable_flag_S2
+    
+    data_json = json.loads(data.data)
+    
+    stable_flag_S2 = data_json.get('stable_flag')
+    rospy.loginfo(f"stable_flag_S2 set to be {stable_flag_S2}")
+    if stable_flag_S1 and stable_flag_S2 and initialize_flag:
+        # Assuming the RPM is predefined for this demonstration
+        rpm = 2  # Modify as needed
+        step_sleep = 60 / (rpm * steps_per_rev)
+        # Move forward to close the fingers
+        rospy.loginfo(f"Sensor initialized, start closing with {rpm} rpm speed...")
+        initialize_flag = False
 
 def motor_pos_ctrl_callback(data):
-    global step_sleep, start_flag
+    global step_sleep, initialize_flag
     position = data.data
     current_position = position_counter
 
-    if not start_flag:
+    if not initialize_flag:
         if position == current_position:
             rospy.loginfo("Motor is already at the desired position.")
             motor_stop_publisher.publish(json.dumps({'motor_stop': True}))
@@ -179,7 +198,8 @@ def motor_control_node():
     signal.signal(signal.SIGINT, signal_handler)
     
     rospy.Subscriber('motor_pos_ctrl', Int32, motor_pos_ctrl_callback)
-    rospy.Subscriber('processed_sensor_data', String, processed_sensor_data_callback)
+    rospy.Subscriber('processed_sensor_data_S1', String, processed_sensor_data_callback_S1)
+    rospy.Subscriber('processed_sensor_data_S2', String, processed_sensor_data_callback_S2)
     rospy.Subscriber('stop_all', String, stop_all_callback)
 
     rospy.spin()

@@ -21,11 +21,11 @@ step_sleep = 0.01
 start_flag = True
 motor_running = False
 
-global motor_stop_publisher
-motor_stop_publisher = None
-
 global motor_pos_reading_publisher
 motor_pos_reading_publisher = 0
+
+global motor_stop_publisher
+motor_stop_publisher = None
 
 
 def setup_gpio():
@@ -57,6 +57,8 @@ def step_motor(steps, step_sleep, direction):
         if (direction == 'forward' and position_counter >= max_steps) or \
            (direction == 'backward' and position_counter <= 0):
             rospy.loginfo("Safety limit reached. Stopping motor.")
+            motor_running = False  # Indicate motor has stopped
+            motor_stop_publisher.publish(json.dumps({'motor_stop': True}))  # Indicate motor has stopped
             return
         
         if direction == 'forward':
@@ -93,6 +95,7 @@ def step_motor(steps, step_sleep, direction):
         
         
     motor_running = False  # Indicate motor has stopped
+    motor_stop_publisher.publish(json.dumps({'motor_stop': True}))
 
 def return_to_zero():
     rospy.loginfo("Cleaning up GPIO and stopping motor...")
@@ -116,7 +119,6 @@ def stop_motor_after_contact():
     global motor_running, motor_stop_publisher
     motor_running = False  # Request motor stop
     rospy.loginfo(f"Motor stopped at position {position_counter}")
-    motor_stop_publisher.publish(json.dumps({'motor_stop': True}))
 
 def processed_sensor_data_callback(data):
     global step_sleep, start_flag
@@ -142,7 +144,6 @@ def grasp_stable_callback(data):
     data_json = json.loads(data.data)
     
     if data_json.get('grasp_stable_flag'):
-        motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
 
 def release_finish_callback(data):
     data_json = json.loads(data.data)
@@ -150,38 +151,7 @@ def release_finish_callback(data):
     if data_json.get('release_finish_flag'):
         rospy.loginfo('Release finished, returning to zero...')
         return_to_zero()
-    motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
 
-
-def signal_handler(sig, frame):
-    rospy.loginfo('SIGINT caught, initiating cleanup...')
-    return_to_zero()  # Assuming this function performs the motor reset and GPIO cleanup
-    sys.exit(0)
-
-def motor_control_node():
-    global motor_pos_reading_publisher, motor_stop_publisher  
-    
-    rospy.init_node('automatic_motor_control_node', anonymous=True)
-    setup_gpio()
-    
-    # Define a publisher for the "motor_stop" topic
-    motor_stop_publisher = rospy.Publisher('motor_stop', String, queue_size=10, latch=True)
-    
-    # Define a publisher for the "motor_pos_reading" topic
-    motor_pos_reading_publisher = rospy.Publisher('motor_pos_reading', Int32, queue_size=10, latch=True)
-    
-    # Register signal handler
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    rospy.Subscriber('processed_sensor_data', String, processed_sensor_data_callback)
-    rospy.Subscriber('contact_detect', String, contact_detected_callback)
-    rospy.Subscriber('grasp_stable', String, grasp_stable_callback)
-    rospy.Subscriber('release_finish', String, release_finish_callback)
-    rospy.Subscriber('restart', String, restart_callback)
-    rospy.Subscriber('stop_all', String, stop_all_callback)
-
-    rospy.spin()
-    
 def restart_callback(msg):
     global start_flag
     start_flag = True
@@ -195,10 +165,35 @@ def stop_all_callback(data):
     if data_json.get('stop_all_flag'):
         motor_running = False  # Request motor stop
         rospy.loginfo(f"Motor stopped at position {position_counter}")
+
+def signal_handler(sig, frame):
+    rospy.loginfo('SIGINT caught, initiating cleanup...')
+    return_to_zero()  # Assuming this function performs the motor reset and GPIO cleanup
+    sys.exit(0)
+
+def motor_control_node():
+    global motor_pos_reading_publisher, motor_stop_publisher  
     
-    motor_stop_publisher.publish(json.dumps({'motor_stop': False}))
+    rospy.init_node('automatic_motor_control_node', anonymous=True)
+    setup_gpio()
+    
+    # Define a publisher for the "motor_pos_reading" topic
+    motor_pos_reading_publisher = rospy.Publisher('motor_pos_reading', Int32, queue_size=10, latch=True)
+    
+    # Define a publisher for the "motor_stop" topic
+    motor_stop_publisher = rospy.Publisher('motor_stop', String, queue_size=10, latch=True)
+    
+    # Register signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    rospy.Subscriber('contact_detect', String, contact_detected_callback)
+    rospy.Subscriber('grasp_stable', String, grasp_stable_callback)
+    rospy.Subscriber('release_finish', String, release_finish_callback)
+    rospy.Subscriber('restart', String, restart_callback)
+    rospy.Subscriber('stop_all', String, stop_all_callback)
+    rospy.Subscriber('processed_sensor_data', String, processed_sensor_data_callback)
 
-
+    rospy.spin()
 
 if __name__ == "__main__":
     motor_control_node()
