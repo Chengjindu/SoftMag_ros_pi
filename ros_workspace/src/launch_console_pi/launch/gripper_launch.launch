@@ -1,0 +1,6 @@
+<launch>
+  
+  <!-- Start gripper_i2c_reading node -->
+  <node name="gripper_reading_node" pkg="gripper_reading" type="gripper_reading_node.py" output="screen" />
+
+</launch>
